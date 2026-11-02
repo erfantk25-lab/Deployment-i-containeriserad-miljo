@@ -26,7 +26,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: saldes
-        image: ghcr.io/erfantk25-lab/deployment-i-containeriserad-miljo/churn-api:576f84f96214392f1de4fc7057224536c5a8d977
+        image: ghcr.io/erfantk25-lab/deployment-i-containeriserad-miljo/churn-api:0d8a7814e80f0a634ec47b9129fa2f6860f1749a
         ports:
         - containerPort: 8000
         securityContext:

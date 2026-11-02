@@ -473,3 +473,36 @@ This project is collaboratively developed by:
 * [Erfan Tahmasebi](https://github.com/erfantk25-lab)
 * [Leo Lindqvist Kröhnert](https://github.com/LeoLindqvist123)
 * [Josefin Lesley](https://github.com/Josefin3647)
+
+---
+
+## Kubernetes Deployment & CD (Mini-Project)
+
+In this individual mini-project, the CI/CD pipeline has been extended to production in Kubernetes, running both locally in `kind` and in the course cloud cluster (`mlops-ht26`, namespace `erfan-tahmasbikondroodi`).
+
+### 1. Kubernetes Manifests (`k8s/`)
+- **Immutable Image Tagging (Commit SHA):** The container image in `k8s/deployment.yaml` is pinned to the 40-character commit SHA (`ghcr.io/erfantk25-lab/deployment-i-containeriserad-miljo/churn-api:<commit-sha>`), never `latest`.
+- **Resource Limits & Quota (`student-quota`):** Each pod requests `cpu: 50m, memory: 96Mi` and limits `cpu: 250m, memory: 256Mi`, fitting 2 replicas + 1 surge pod (`150m` CPU, `288Mi` RAM) inside the namespace quota (`250m` CPU / `384Mi` RAM).
+- **Health Probes & Security:** `readinessProbe` and `livenessProbe` query `GET /health` on port `8000`, and `securityContext` enforces `restricted:latest` (`runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`).
+
+### 2. Multi-Architecture Build (`linux/amd64` & `linux/arm64`)
+Because the cloud worker nodes run on `aarch64` (`linux/arm64`) while local `kind` runs on `x86_64` (`linux/amd64`), the `package` job in `.github/workflows/ci.yml` uses QEMU and Docker Buildx (`--platform linux/amd64,linux/arm64`) so the same image SHA runs in both environments.
+
+### 3. Deployment Strategy (Rolling Update)
+**Selected Strategy:** `RollingUpdate` (`replicas: 2`, `maxUnavailable: 0`, `maxSurge: 1`).
+- **Zero Downtime:** `maxUnavailable: 0` ensures no existing pod is terminated until the new pod passes its `/health` readiness probe, protecting the call list and API consumers.
+- **Quota Efficiency:** Unlike *Blue/Green* (which doubles pod count and exceeds the `384Mi` memory quota) or *Canary* (which requires a service mesh/ingress controller), `RollingUpdate` provides safe incremental rollout and instant rollback (`kubectl rollout undo`) within cluster limits.
+
+### 4. Automated Deployment from the Pipeline (GitHub Actions CD)
+The `deploy` job in `.github/workflows/ci.yml` runs only on pushes to `main` (`if: github.ref == 'refs/heads/main' && github.event_name == 'push'`), requires manual review approval via the `production` GitHub Environment, injects `GITHUB_SHA` into `k8s/deployment.yaml`, and verifies rollout in `erfan-tahmasbikondroodi`.
+
+### 5. Operations, Monitoring, and Drift Management Plan
+1. **Detecting Data Drift:** Batch deliveries are checked via Pandera (`validation/schema.py`) and statistical drift checks (`src/churn/drift.py`, halting if feature means shift > `0.50` SD or new categories appear). In production, `/predict` inputs and predicted probabilities are logged and periodically compared against `data/kundbas.csv`.
+2. **Detecting Model Degradation & Concept Drift:** Pre-deployment candidates must pass both `ROC AUC >= 0.74` (`churn.evaluate`) and `churn.regression_gate` (max `0.020` drop vs `config/model_baseline.json`). Post-deployment, logged predictions are joined with delayed ground-truth outcomes from call-list follow-ups to track realized `ROC AUC`, `Precision`, and `Recall`.
+3. **Response Plan (Alert, Rollback, Retrain):**
+   - **Immediate Post-Release Issue -> Alert & Rollback:** Technical errors, failing `/health` probes, or anomalous prediction distributions trigger an immediate rollback via `kubectl rollout undo deployment/saldes-deployment`.
+   - **Data Drift -> Alert & Retraining:** Verified shifts in customer feature distributions trigger pipeline retraining on fresh data, gated by `evaluate` and `regression_gate`.
+   - **Concept Drift -> Algorithm Upgrade:** If retraining `LogisticRegression` on fresh data fails quality gates due to changing customer behavior, we evaluate switching to a non-linear model (e.g., `HistGradientBoostingClassifier` or `RandomForestClassifier` in `src/churn/model.py`).
+
+### AI Usage Disclosure
+AI tools were used as a sounding board to structure Kubernetes manifests (`deployment.yaml`, `service.yaml`) within `student-quota`, diagnose the `aarch64` vs `x86_64` architecture mismatch (`exec format error`) and configure multi-arch Buildx builds in GitHub Actions, and refine the documentation. All configurations, rollouts, and rollbacks were tested and verified in both `kind` and the course cluster.
